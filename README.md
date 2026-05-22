@@ -21,18 +21,13 @@ No cloud, no API keys, no rate limits.
 - [uv](https://docs.astral.sh/uv/) — install with `curl -LsSf https://astral.sh/uv/install.sh | sh`
 - Claude Code (CLI, desktop app, or Cursor extension)
 
-## Install — option A: Claude Code plugin (recommended)
+## Install
 
-```
-/plugin marketplace add Vincweb/pocket-tts-mcp
-/plugin install pocket-tts@vincweb-tools
-```
+### Option A — standalone MCP (works with any MCP client)
 
-Restart Claude Code. On first use, `uv run` materializes the Python venv (~30 s)
-and the Kyutai model downloads from Hugging Face (~1 GB, once per language).
-Subsequent runs are instant.
-
-## Install — option B: standalone (no plugin system)
+This is the universal path: a regular MCP server you wire into any client
+that speaks the Model Context Protocol (Claude Desktop, Claude Code CLI,
+Cursor's Claude Code extension, etc.).
 
 ```bash
 git clone https://github.com/Vincweb/pocket-tts-mcp.git
@@ -40,9 +35,38 @@ cd pocket-tts-mcp/plugin
 ./install.sh
 ```
 
-The script `uv sync`'s the venv and prints the `.mcp.json` snippet to paste
-into your project. You'll also need to copy `plugin/skills/voice-mode/SKILL.md`
-to `~/.claude/skills/voice-mode/SKILL.md`. Then restart Claude Code.
+The script `uv sync`'s the venv and prints the `.mcp.json` snippet to
+paste into your project (or `~/.claude.json` for a global install).
+
+If you want the bundled `/voice-mode` skill (only relevant in Claude
+Code / Cursor), also copy it:
+
+```bash
+mkdir -p ~/.claude/skills/voice-mode
+cp plugin/skills/voice-mode/SKILL.md ~/.claude/skills/voice-mode/SKILL.md
+```
+
+Then restart your MCP client.
+
+### Option B — Claude Code plugin (recommended if you use Claude Code or Cursor)
+
+If you're already on Claude Code (CLI, desktop, or the Cursor extension),
+the plugin path bundles the MCP server, the `/voice-mode` skill, and the
+wiring in one step:
+
+```
+/plugin marketplace add Vincweb/pocket-tts-mcp
+/plugin install pocket-tts@vincweb-tools
+```
+
+Restart Claude Code. On first use, `uv run` materializes the Python venv
+(~30 s) and the Kyutai model downloads from Hugging Face (~1 GB, once per
+language). Subsequent runs are instant.
+
+> 💡 The plugin layer is a Claude Code feature; Cursor inherits it because
+> it ships the Claude Code CLI. Claude Desktop (the native app) and
+> non-Claude MCP clients don't expose `/plugin install` — use Option A
+> there.
 
 ## Use
 

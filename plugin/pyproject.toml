@@ -1,6 +1,6 @@
 [project]
 name = "pocket-tts-mcp"
-version = "0.4.0"
+version = "0.4.1"
 description = "MCP server wrapping Kyutai Pocket TTS for Claude Code (in-process, streaming, gap-free playback)"
 requires-python = ">=3.10,<3.14"
 dependencies = [

@@ -1,9 +1,9 @@
 ---
 name: voice-mode
-description: "Use when the user wants spoken responses for the rest of the conversation. Activate via /voice-mode. Examples: \"parle-moi\", \"active le mode vocal\", \"réponds-moi à l'oral\", \"voice mode\"."
+description: "Spoken responses via Kyutai pocket-tts (local, fast TTFA ~80–200 ms, ~1 GB RAM, synthetic voice). Activate by saying \"parle-moi\", \"voice mode\", \"active le mode vocal\", \"use pocket-tts\", or invoking /pocket-tts:voice-mode. If the user also has voxtral-mcp installed and explicitly asks for voxtral's voice, defer to that skill instead."
 ---
 
-# Voice Mode
+# Voice Mode — Kyutai pocket-tts
 
 Activates **voice-first replies** for the remainder of this conversation. From the moment this skill is invoked until the user explicitly disables it, you must speak a short version of each response aloud via the `mcp__pocket-tts__speak` tool, in addition to your normal text reply.
 

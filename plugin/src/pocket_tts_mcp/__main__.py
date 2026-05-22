@@ -1,6 +1,8 @@
 import atexit
 import os
+import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -12,6 +14,22 @@ PORT = int(os.environ.get("POCKET_TTS_PORT", "8765"))
 LANGUAGE = os.environ.get("POCKET_TTS_LANGUAGE", "french_24l")
 URL = f"http://127.0.0.1:{PORT}"
 STARTUP_TIMEOUT = int(os.environ.get("POCKET_TTS_STARTUP_TIMEOUT", "120"))
+
+
+def _pocket_tts_binary() -> str:
+    # The pocket-tts CLI is shipped as a dependency, so it lives in the same
+    # venv as this MCP server. Resolve it explicitly to avoid PATH issues when
+    # spawned by Claude Code, then fall back to PATH for non-venv installs.
+    venv_bin = Path(sys.executable).parent / "pocket-tts"
+    if venv_bin.exists():
+        return str(venv_bin)
+    found = shutil.which("pocket-tts")
+    if found:
+        return found
+    raise RuntimeError(
+        "pocket-tts CLI not found. It should be installed as a dependency of "
+        "this package — check your venv."
+    )
 
 mcp = FastMCP("pocket-tts")
 _serve_proc: subprocess.Popen | None = None
@@ -31,7 +49,7 @@ def _ensure_serve() -> None:
         return
     log_path = Path(tempfile.gettempdir()) / "pocket-tts-serve.log"
     _serve_proc = subprocess.Popen(
-        ["pocket-tts", "serve", "--language", LANGUAGE, "--port", str(PORT)],
+        [_pocket_tts_binary(), "serve", "--language", LANGUAGE, "--port", str(PORT)],
         stdout=log_path.open("ab"),
         stderr=subprocess.STDOUT,
         start_new_session=False,

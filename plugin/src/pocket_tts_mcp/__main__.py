@@ -1,141 +1,236 @@
+"""MCP server wrapping Kyutai Pocket TTS via its native Python streaming API.
+
+Replaces the v0.3.x architecture (which shelled out to `pocket-tts serve`
+and POSTed full WAVs to it). The new pipeline:
+
+  speak() request
+      └─► generation thread: tts_model.generate_audio_stream(...) yields
+          ~80 ms PCM chunks of torch.Tensor
+              └─► audio queue (numpy float32)
+                      └─► writer thread: stream.write(chunk) in blocking
+                          write-mode sounddevice OutputStream
+                              └─► CoreAudio
+
+No external daemon, no HTTP, no temp WAV files, no afplay. First audio
+in ~200 ms (Kyutai's claim), playback is gap-free thanks to PortAudio's
+internal buffer (Python never runs in the realtime audio thread).
+"""
 import atexit
 import os
 import queue
-import shutil
-import subprocess
-import sys
-import tempfile
 import threading
-import time
-from pathlib import Path
+from typing import Any
 
-import httpx
+import numpy as np
+import sounddevice as sd
 from mcp.server.fastmcp import FastMCP
 
-PORT = int(os.environ.get("POCKET_TTS_PORT", "8765"))
 LANGUAGE = os.environ.get("POCKET_TTS_LANGUAGE", "french_24l")
-URL = f"http://127.0.0.1:{PORT}"
-STARTUP_TIMEOUT = int(os.environ.get("POCKET_TTS_STARTUP_TIMEOUT", "120"))
-
-
-def _pocket_tts_binary() -> str:
-    # The pocket-tts CLI is shipped as a dependency, so it lives in the same
-    # venv as this MCP server. Resolve it explicitly to avoid PATH issues when
-    # spawned by Claude Code, then fall back to PATH for non-venv installs.
-    venv_bin = Path(sys.executable).parent / "pocket-tts"
-    if venv_bin.exists():
-        return str(venv_bin)
-    found = shutil.which("pocket-tts")
-    if found:
-        return found
-    raise RuntimeError(
-        "pocket-tts CLI not found. It should be installed as a dependency of "
-        "this package — check your venv."
-    )
-
+DEFAULT_VOICE = os.environ.get("POCKET_TTS_VOICE")  # None → language default
+QUANTIZE = os.environ.get("POCKET_TTS_QUANTIZE", "0") == "1"
+DEVICE = os.environ.get("POCKET_TTS_DEVICE", "cpu")
+MAX_TOKENS = int(os.environ.get("POCKET_TTS_MAX_TOKENS", "50"))
 
 mcp = FastMCP("pocket-tts")
-_serve_proc: subprocess.Popen | None = None
 
-# Playback queue: speak() generates the WAV synchronously, then enqueues the
-# temp file path for a background thread to play sequentially via afplay.
-_play_queue: "queue.Queue[str | None]" = queue.Queue()
-_player_thread: threading.Thread | None = None
-_player_lock = threading.Lock()
-_current_play_proc: subprocess.Popen | None = None
+_model: Any = None
+_model_lock = threading.Lock()
+_model_load_error: str | None = None
+_sample_rate: int | None = None  # discovered from model.config.mimi.sample_rate
+
+# Per-voice state cache. Built lazily on first use of a voice.
+_voice_states: dict[str, Any] = {}
+_voice_states_lock = threading.Lock()
+
+# Audio queue: generation thread puts numpy chunks, writer thread calls
+# stream.write() in blocking mode. PortAudio handles all realtime concerns.
+_audio_q: "queue.Queue[np.ndarray | None]" = queue.Queue()
+_writer_thread: threading.Thread | None = None
+_stream: sd.OutputStream | None = None
+_stream_lock = threading.Lock()
+
+# Generation queue (FIFO of speak requests).
+_gen_q: "queue.Queue[tuple[str, str | None] | None]" = queue.Queue()
+_gen_thread: threading.Thread | None = None
+_cancel_event = threading.Event()
+_gen_in_flight = threading.Event()
+
 _last_error: str | None = None
 
 
-def _is_serve_up() -> bool:
-    try:
-        r = httpx.get(f"{URL}/health", timeout=1.0)
-        return r.status_code == 200
-    except httpx.HTTPError:
-        return False
-
-
-def _ensure_serve() -> None:
-    global _serve_proc
-    if _is_serve_up():
-        return
-    log_path = Path(tempfile.gettempdir()) / "pocket-tts-serve.log"
-    _serve_proc = subprocess.Popen(
-        [_pocket_tts_binary(), "serve", "--language", LANGUAGE, "--port", str(PORT)],
-        stdout=log_path.open("ab"),
-        stderr=subprocess.STDOUT,
-        start_new_session=False,
-    )
-    deadline = time.time() + STARTUP_TIMEOUT
-    while time.time() < deadline:
-        if _is_serve_up():
-            return
-        if _serve_proc.poll() is not None:
-            raise RuntimeError(
-                f"pocket-tts serve exited (code={_serve_proc.returncode}). "
-                f"See {log_path} for details."
-            )
-        time.sleep(0.5)
-    raise RuntimeError(f"pocket-tts serve did not become ready within {STARTUP_TIMEOUT}s")
-
-
-def _player_loop() -> None:
-    global _current_play_proc, _last_error
-    while True:
-        wav_path = _play_queue.get()
-        if wav_path is None:
-            return
+def _ensure_model() -> Any:
+    global _model, _model_load_error, _sample_rate
+    with _model_lock:
+        if _model is not None:
+            return _model
         try:
-            with _player_lock:
-                _current_play_proc = subprocess.Popen(["afplay", wav_path])
-            ret = _current_play_proc.wait()
-            with _player_lock:
-                _current_play_proc = None
-            # ret == -15 is SIGTERM from stop_speaking — not an error.
-            if ret not in (0, -15):
-                _last_error = f"afplay exited {ret} for {wav_path}"
+            from pocket_tts.models.tts_model import TTSModel  # heavy import
+            model = TTSModel.load_model(language=LANGUAGE, quantize=QUANTIZE)
+            model.to(DEVICE)
+            _sample_rate = int(model.config.mimi.sample_rate)
+            _model = model
+            return _model
         except Exception as e:  # noqa: BLE001
-            _last_error = f"player thread error: {e}"
-        finally:
+            _model_load_error = f"{type(e).__name__}: {e}"
+            raise
+
+
+def _resolve_voice(voice: str | None) -> str:
+    if voice:
+        return voice
+    if DEFAULT_VOICE:
+        return DEFAULT_VOICE
+    from pocket_tts.main import get_default_voice_for_language
+    return get_default_voice_for_language(LANGUAGE)
+
+
+def _voice_state_for(voice: str) -> Any:
+    with _voice_states_lock:
+        if voice in _voice_states:
+            return _voice_states[voice]
+    model = _ensure_model()
+    state = model.get_state_for_audio_prompt(voice)
+    with _voice_states_lock:
+        _voice_states[voice] = state
+    return state
+
+
+def _ensure_stream() -> None:
+    global _stream
+    sr = _sample_rate or 24000
+    with _stream_lock:
+        if _stream is None or _stream.closed:
+            _stream = sd.OutputStream(
+                samplerate=sr,
+                channels=1,
+                dtype="float32",
+            )
+            _stream.start()
+        elif _stream.stopped:
+            _stream.start()
+
+
+def _close_stream() -> None:
+    global _stream
+    with _stream_lock:
+        if _stream is not None and not _stream.closed:
             try:
-                os.unlink(wav_path)
-            except OSError:
+                _stream.abort()
+                _stream.close()
+            except Exception:  # noqa: BLE001
                 pass
+            _stream = None
 
 
-def _ensure_player() -> None:
-    global _player_thread
-    if _player_thread is None or not _player_thread.is_alive():
-        _player_thread = threading.Thread(target=_player_loop, daemon=True)
-        _player_thread.start()
+def _writer_loop() -> None:
+    global _last_error
+    while True:
+        chunk = _audio_q.get()
+        if chunk is None:
+            return
+        if _cancel_event.is_set():
+            continue
+        try:
+            stream = _stream
+            if stream is None or stream.closed:
+                continue
+            stream.write(chunk)
+        except Exception as e:  # noqa: BLE001
+            _last_error = f"writer: {type(e).__name__}: {e}"
 
 
-def _drain_queue() -> int:
+def _ensure_writer() -> None:
+    global _writer_thread
+    if _writer_thread is None or not _writer_thread.is_alive():
+        _writer_thread = threading.Thread(target=_writer_loop, daemon=True)
+        _writer_thread.start()
+
+
+def _chunk_to_float32(chunk: Any) -> np.ndarray:
+    # pocket-tts yields torch.Tensor on CPU. Defensive: support numpy too.
+    try:
+        import torch  # noqa: F401
+        if hasattr(chunk, "detach"):
+            chunk = chunk.detach().cpu().numpy()
+    except ImportError:
+        pass
+    arr = np.asarray(chunk).astype(np.float32, copy=False)
+    if arr.ndim > 1:
+        arr = arr.squeeze()
+    return arr
+
+
+def _generation_loop() -> None:
+    global _last_error
+    while True:
+        req = _gen_q.get()
+        if req is None:
+            return
+        text, voice_arg = req
+        _cancel_event.clear()
+        _gen_in_flight.set()
+        try:
+            model = _ensure_model()
+            voice = _resolve_voice(voice_arg)
+            voice_state = _voice_state_for(voice)
+            opened_stream = False
+            for chunk in model.generate_audio_stream(
+                model_state=voice_state,
+                text_to_generate=text,
+                max_tokens=MAX_TOKENS,
+            ):
+                if _cancel_event.is_set():
+                    break
+                arr = _chunk_to_float32(chunk)
+                if arr.size == 0:
+                    continue
+                if not opened_stream:
+                    _ensure_stream()
+                    _ensure_writer()
+                    opened_stream = True
+                _audio_q.put(arr)
+        except Exception as e:  # noqa: BLE001
+            _last_error = f"generation: {type(e).__name__}: {e}"
+        finally:
+            _gen_in_flight.clear()
+
+
+def _ensure_gen_thread() -> None:
+    global _gen_thread
+    if _gen_thread is None or not _gen_thread.is_alive():
+        _gen_thread = threading.Thread(target=_generation_loop, daemon=True)
+        _gen_thread.start()
+
+
+def _drain_audio_q() -> int:
     dropped = 0
     while True:
         try:
-            wav = _play_queue.get_nowait()
+            x = _audio_q.get_nowait()
         except queue.Empty:
             return dropped
-        if wav is None:
+        if x is None:
             continue
+        dropped += 1
+
+
+def _drain_gen_q() -> int:
+    dropped = 0
+    while True:
         try:
-            os.unlink(wav)
-        except OSError:
-            pass
+            x = _gen_q.get_nowait()
+        except queue.Empty:
+            return dropped
+        if x is None:
+            continue
         dropped += 1
 
 
 def _cleanup() -> None:
-    with _player_lock:
-        if _current_play_proc and _current_play_proc.poll() is None:
-            _current_play_proc.terminate()
-    _drain_queue()
-    if _serve_proc and _serve_proc.poll() is None:
-        _serve_proc.terminate()
-        try:
-            _serve_proc.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            _serve_proc.kill()
+    _cancel_event.set()
+    _drain_audio_q()
+    _drain_gen_q()
+    _close_stream()
 
 
 atexit.register(_cleanup)
@@ -143,72 +238,75 @@ atexit.register(_cleanup)
 
 @mcp.tool()
 def speak(text: str, voice: str | None = None) -> str:
-    """Speak text aloud through Kyutai Pocket TTS (local, French by default).
+    """Speak text aloud through Kyutai Pocket TTS (local, streaming, ~200ms TTFA).
 
-    Returns as soon as the WAV is generated (~0.2-1 s for a typical sentence);
-    audio plays in a background thread so you can continue working. Multiple
-    speak() calls are queued and played sequentially — they never overlap.
+    Returns immediately. The text is queued for streaming generation in a
+    background thread; chunks are pushed into a continuous sounddevice
+    OutputStream as they're produced. Multiple speak() calls queue and
+    play sequentially — they never overlap.
 
     Use `stop_speaking()` at the start of a new conversational turn to drop
-    any audio still queued from the previous turn.
+    any audio still playing/queued from the previous turn AND cancel any
+    in-flight generation.
 
     Args:
-        text: Text to read aloud.
-        voice: Optional built-in voice name ("estelle", "alba", "giovanni", ...)
-               or a remote voice URL (http(s)://, hf://). Defaults to the
-               language's built-in voice (estelle for French).
+        text: Text to read aloud. The model language is fixed at startup
+              via POCKET_TTS_LANGUAGE (default `french_24l`).
+        voice: Built-in voice name (e.g. "estelle", "alba", "giovanni",
+               "juergen", "lola", "rafael"), or a path to a wav file for
+               voice cloning, or a `hf://` URL. Defaults to the language's
+               built-in voice.
     """
-    _ensure_serve()
-    _ensure_player()
-    files: dict[str, tuple[None, str]] = {"text": (None, text)}
-    if voice:
-        files["voice_url"] = (None, voice)
-    response = httpx.post(f"{URL}/tts", files=files, timeout=120.0)
-    response.raise_for_status()
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-        f.write(response.content)
-        wav_path = f.name
-    _play_queue.put(wav_path)
+    _ensure_gen_thread()
+    _gen_q.put((text, voice))
     return (
-        f"queued {len(text)} chars "
-        f"(voice={voice or 'default'}, queue depth ~{_play_queue.qsize()})"
+        f"enqueued {len(text)} chars (voice={voice or 'default'}, "
+        f"gen_pending={_gen_q.qsize()}, audio_buffer={_audio_q.qsize()})"
     )
 
 
 @mcp.tool()
 def stop_speaking() -> str:
-    """Stop the currently-playing audio and drop any audio queued behind it.
+    """Stop the currently-playing audio, drop pending audio chunks, AND
+    cancel any in-flight generation.
 
-    Call this at the start of a new conversational turn if a previous turn's
-    spoken summary may still be playing — it prevents the user from hearing
-    audio that no longer matches what's on screen.
+    Call this at the start of a new conversational turn so the previous
+    turn's audio doesn't bleed into the new one.
     """
-    with _player_lock:
-        killed = (
-            _current_play_proc is not None
-            and _current_play_proc.poll() is None
-        )
-        if killed:
-            _current_play_proc.terminate()
-    dropped = _drain_queue()
-    return f"dropped {dropped} queued, {'killed' if killed else 'no'} current"
+    _cancel_event.set()
+    dropped_gen = _drain_gen_q()
+    dropped_audio = _drain_audio_q()
+    with _stream_lock:
+        if _stream is not None and not _stream.closed:
+            try:
+                _stream.abort()
+            except Exception:  # noqa: BLE001
+                pass
+    return (
+        f"cancelled generation, dropped {dropped_audio} audio chunks "
+        f"+ {dropped_gen} pending requests, aborted current playback"
+    )
 
 
 @mcp.tool()
 def status() -> dict:
-    """Report daemon health, queue depth, and last playback error."""
-    with _player_lock:
-        playing = (
-            _current_play_proc is not None
-            and _current_play_proc.poll() is None
+    """Report model load state, queue depths, and last error."""
+    with _stream_lock:
+        stream_active = (
+            _stream is not None
+            and not _stream.closed
+            and not _stream.stopped
         )
     return {
-        "daemon_up": _is_serve_up(),
-        "url": URL,
         "language": LANGUAGE,
-        "managed_pid": _serve_proc.pid if _serve_proc and _serve_proc.poll() is None else None,
-        "queue_depth": _play_queue.qsize(),
-        "currently_playing": playing,
+        "model_loaded": _model is not None,
+        "model_load_error": _model_load_error,
+        "sample_rate": _sample_rate,
+        "cached_voices": list(_voice_states.keys()),
+        "gen_pending": _gen_q.qsize(),
+        "gen_in_flight": _gen_in_flight.is_set(),
+        "audio_buffer": _audio_q.qsize(),
+        "stream_active": stream_active,
         "last_error": _last_error,
     }
 

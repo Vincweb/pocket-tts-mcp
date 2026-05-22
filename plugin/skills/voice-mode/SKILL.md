@@ -1,0 +1,76 @@
+---
+name: voice-mode
+description: "Use when the user wants spoken responses for the rest of the conversation. Activate via /voice-mode. Examples: \"parle-moi\", \"active le mode vocal\", \"réponds-moi à l'oral\", \"voice mode\"."
+---
+
+# Voice Mode
+
+Activates **voice-first replies** for the remainder of this conversation. From the moment this skill is invoked until the user explicitly disables it, you must speak a short version of each response aloud via the `mcp__pocket-tts__speak` tool, in addition to your normal text reply.
+
+## Activation
+
+When this skill fires, call `mcp__pocket-tts__speak` with a brief confirmation in the user's language ("mode vocal activé, vas-y" / "voice mode on, go ahead"), then continue conversing.
+
+## How to behave each turn
+
+For **every** subsequent turn, follow this pattern:
+
+1. Compose your normal text response (markdown, code blocks, links — as usual).
+2. **Also** call `mcp__pocket-tts__speak(text=...)` once with a **spoken summary** of the response — short, natural, conversational.
+
+The spoken summary is NOT the same as the text. It's what you'd say if reading the answer to someone in person. The text is what you'd write.
+
+## Rules for the spoken summary
+
+- **Short**: 1–3 sentences, max ~30 seconds of speech. The user can ask for more aloud.
+- **Natural prosody**: contractions, no bullet lists, no markdown syntax (asterisks, backticks, headers).
+- **No code, file paths, URLs, or commands** in speech. Refer to them as "the code below", "the file I'm showing you", "the command in the answer".
+- **Skip silent turns** when the entire response is a code dump, a long diff, or a table: speak a one-line preview ("voilà le diff", "ça fait trois fichiers à modifier") and let the text carry the detail.
+- **No emojis** in the spoken text (TTS reads them literally).
+- **Match the user's language**: French → French, English → English. The MCP defaults to French (`french_24l`). For English answers, also call with `voice="alba"` and pass English text — the model handles both.
+
+## Voice selection
+
+By default, `speak()` uses Estelle (French built-in voice). Other voices you can pass via the `voice` arg:
+- `"alba"` — neutral default voice (works in EN)
+- `"estelle"` — French female (default for French)
+- `"giovanni"` — Italian male
+- `"juergen"` — German male
+- `"lola"` — Spanish female
+- `"rafael"` — Portuguese male
+
+If the user asks for a specific voice ("parle avec la voix de Rafael"), use that voice for the rest of the conversation until they change it.
+
+## Deactivation
+
+Stop calling `mcp__pocket-tts__speak` when the user says any of:
+- "mute" / "silence" / "stop talking" / "arrête de parler" / "désactive le mode vocal" / "/voice-mode off"
+
+Confirm deactivation in text only ("voice mode off, je ne parle plus jusqu'à nouvel ordre").
+
+## Anti-patterns — do not
+
+- ❌ Don't pre-call `speak()` before composing the text (you need the text first to summarize it).
+- ❌ Don't speak the literal markdown of your response (no "asterisk asterisk bonjour asterisk asterisk").
+- ❌ Don't speak inline code spans verbatim (instead: "the function below" / "as shown").
+- ❌ Don't repeat the full response in audio — it's a summary, not a recitation.
+- ❌ Don't speak when the user explicitly typed something silent like a single command (`/status`, `/help`).
+
+## Quick example
+
+User: "qu'est-ce que tu penses de ce code ?"
+
+Your response (text):
+```
+La logique est bonne, mais `validateUser` mélange auth et permissions.
+Je te propose de la splitter en deux fonctions :
+
+\`\`\`ts
+// before/after diff
+\`\`\`
+```
+
+Your `speak()` call:
+```
+text="La logique est bonne, mais la fonction valide l'utilisateur mélange deux responsabilités. Je te propose de la séparer en deux. Tu veux que je le fasse ?"
+```

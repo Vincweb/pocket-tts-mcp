@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "pocket-tts": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "${CLAUDE_PLUGIN_ROOT}",
+        "pocket-tts-mcp"
+      ],
+      "env": {
+        "POCKET_TTS_LANGUAGE": "french_24l",
+        "POCKET_TTS_PORT": "8765"
+      }
+    }
+  }
+}

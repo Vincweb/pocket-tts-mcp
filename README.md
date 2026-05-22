@@ -4,13 +4,16 @@ Local-only voice for Claude Code on macOS, via [Kyutai Pocket TTS](https://githu
 No cloud, no API keys, no rate limits.
 
 - 🇫🇷 French (Estelle), 🇬🇧 English (Alba), plus Spanish, German, Italian, Portuguese
-- ~5× real-time on Apple Silicon CPU — model stays warm in RAM between calls
-- **Non-blocking** `speak()` (v0.3.0): audio plays in the background, Claude keeps working
+- **TTFA ~80–200 ms** thanks to native streaming via the pocket-tts Python API
+- ~4-5× real-time generation on Apple Silicon / Intel CPU — model stays warm in RAM
+- Non-blocking `speak()`, gap-free playback via `sounddevice` write-mode
 - Bundled `/voice-mode` skill — Claude speaks summaries of its answers automatically
-- Self-contained: bundles the Kyutai `pocket-tts` CLI as a dependency, no extra install
+- ~600 MB venv, ~1 GB model cache — lightweight relative to bigger TTS models
 
-Ships as a Claude Code **plugin** (with a bundled MCP server + skill) and also
-works as a standalone MCP server for users who don't use the plugin system.
+> 💡 Companion plugin: [**voxtral-mcp**](https://github.com/Vincweb/voxtral-mcp)
+> wraps Mistral Voxtral 4B (more natural voice but 5× more RAM and Apple Silicon
+> only). See the [comparison table](#pocket-tts-mcp-vs-voxtral-mcp) below — both
+> plugins share the same MCP API and `/voice-mode` skill.
 
 ## Requirements
 
@@ -25,10 +28,9 @@ works as a standalone MCP server for users who don't use the plugin system.
 /plugin install pocket-tts@vincweb-tools
 ```
 
-That's it. The plugin ships the MCP server, the `/voice-mode` skill, and the
-right wiring. Restart Claude Code; on first use, `uv run` materializes the
-Python venv (~30 s) and the Kyutai model downloads from Hugging Face (~1 GB,
-once per language). Subsequent runs are instant.
+Restart Claude Code. On first use, `uv run` materializes the Python venv (~30 s)
+and the Kyutai model downloads from Hugging Face (~1 GB, once per language).
+Subsequent runs are instant.
 
 ## Install — option B: standalone (no plugin system)
 
@@ -38,21 +40,14 @@ cd pocket-tts-mcp/plugin
 ./install.sh
 ```
 
-The script:
-1. `uv sync` materializes the venv at `plugin/.venv/` with both the MCP server
-   and the `pocket-tts` CLI as dependencies
-2. Prints the `.mcp.json` snippet to paste into your project
-
-You'll need to manually:
-- Add the printed `.mcp.json` entry to your project's `.mcp.json` (or `~/.claude.json`)
-- Copy `plugin/skills/voice-mode/SKILL.md` to `~/.claude/skills/voice-mode/SKILL.md`
-
-Then restart Claude Code.
+The script `uv sync`'s the venv and prints the `.mcp.json` snippet to paste
+into your project. You'll also need to copy `plugin/skills/voice-mode/SKILL.md`
+to `~/.claude/skills/voice-mode/SKILL.md`. Then restart Claude Code.
 
 ## Use
 
-In any conversation, type **`/voice-mode`** (or `/pocket-tts:voice-mode` if installed
-as a plugin), or just say **"parle-moi"** / **"voice mode"**. Claude will:
+In any conversation, type **`/voice-mode`** or say **"parle-moi"** / **"voice mode"**.
+Claude will:
 
 - Reply with normal text (markdown, code, links — unchanged)
 - Call `stop_speaking()` at the start of each turn to drop any audio still
@@ -63,16 +58,17 @@ as a plugin), or just say **"parle-moi"** / **"voice mode"**. Claude will:
 
 Stop with **"mute"**, **"silence"**, **"stop talking"**, **"arrête de parler"**.
 
-The first call after a Claude Code restart takes ~10–15 s (model load).
-Subsequent generation calls are 0.2–1 s, audio plays asynchronously.
+The first call after a Claude Code restart takes ~3–5 s (model load).
+Subsequent calls have **~80–200 ms TTFA** thanks to native streaming — you
+hear the start of the audio almost immediately, even on long texts.
 
 ## MCP tools exposed
 
 | Tool | Purpose |
 |---|---|
-| `speak(text, voice?)` | Generate audio for `text` and **queue it for background playback**. Returns immediately once the WAV is generated (~0.2–1 s). Multiple calls queue sequentially — no overlap. |
-| `stop_speaking()` | Stop the currently-playing audio and drop everything queued behind it. Use at the start of a new turn to clear stale audio. |
-| `status()` | Report daemon health, current queue depth, whether something is playing, and the last playback error (errors don't silently disappear). |
+| `speak(text, voice?)` | Generate audio for `text` and **queue it for background playback**. Returns immediately; streaming generation feeds the audio stream while you keep working. Multiple calls queue and play sequentially — no overlap. |
+| `stop_speaking()` | Stop the currently-playing audio, drop everything queued behind it, and cancel any in-flight generation. Use at the start of a new turn to clear stale audio. |
+| `status()` | Report model load state, sample rate, cached voices, queue depths, last error. |
 
 ## Configuration
 
@@ -80,9 +76,11 @@ Set in the `env` block of the MCP entry (`.mcp.json`):
 
 | Variable | Default | Notes |
 |---|---|---|
-| `POCKET_TTS_LANGUAGE` | `french_24l` | Also: `english`, `spanish_24l`, `german_24l`, `italian_24l`, `portuguese_24l` |
-| `POCKET_TTS_PORT` | `8765` | Local port for the pocket-tts FastAPI daemon |
-| `POCKET_TTS_STARTUP_TIMEOUT` | `120` | Seconds to wait for the daemon to become ready |
+| `POCKET_TTS_LANGUAGE` | `french_24l` | Also: `english`, `english_2026-01`, `english_2026-04`, `spanish_24l`, `german_24l`, `italian_24l`, `portuguese_24l` |
+| `POCKET_TTS_VOICE` | (language default) | Built-in voice name to use when `speak()` is called without an explicit `voice` arg |
+| `POCKET_TTS_DEVICE` | `cpu` | PyTorch device. Stick with `cpu` on Apple Silicon — `mps` is unsupported by the pocket-tts model. |
+| `POCKET_TTS_QUANTIZE` | `0` | Set to `1` for int8 quantization (smaller RAM, slightly slower). |
+| `POCKET_TTS_MAX_TOKENS` | `50` | Max tokens per streaming chunk. |
 
 ## Voices
 
@@ -97,40 +95,50 @@ Pass `voice="..."` in your conversation ("parle avec la voix de Rafael"):
 | `giovanni` | Italian | |
 | `rafael` | Portuguese | |
 
-You can also pass any Hugging Face voice URL (`hf://...`) or a path you exported
-with `pocket-tts export-voice` for voice cloning.
+You can also pass any Hugging Face voice URL (`hf://...`) or a path to a `.wav` file
+for voice cloning — pocket-tts builds the voice state from the audio prompt on first
+use, then caches it for subsequent calls.
 
-## Architecture
+## Architecture (v0.4.0)
 
 ```
 Claude Code  ──MCP stdio──▶  pocket-tts-mcp (Python, FastMCP)
                                   │
                                   │  speak(text)
                                   ▼
-                            POST /tts (multipart)
+                              gen queue
                                   │
                                   ▼
-                            pocket-tts serve  ──▶  WAV bytes
-                            (FastAPI, model in RAM)     │
-                                                        ▼
-                                                  playback queue
-                                                        │
-                                                        ▼
-                                                  player thread
-                                                        │
-                                                        ▼
-                                                      afplay
+                       generation thread
+                            tts_model.generate_audio_stream(...)
+                            yields torch.Tensor chunks (~80 ms each)
+                                  │
+                                  ▼
+                          audio_q (numpy float32)
+                                  │
+                                  ▼
+                       writer thread → stream.write() blocking
+                                  │
+                                  ▼
+                       sounddevice OutputStream (write-mode)
+                                  │
+                                  ▼
+                              CoreAudio
 ```
 
 Key design choices:
-- **MCP server spawns `pocket-tts serve` as a subprocess on first use**, keeps
-  the model warm in RAM, tears it down on shutdown via `atexit`.
-- **Async playback**: `speak()` writes the WAV to a temp file, pushes it onto
-  a `queue.Queue` and returns. A daemon thread (`_player_loop`) consumes the
-  queue and calls `afplay` via `subprocess.Popen`, so the playback handle is
-  preserved for `stop_speaking()` to terminate.
-- **No overlap**: queue is single-consumer, so audio plays sequentially even
-  if Claude fires multiple `speak()` calls in rapid succession.
+
+- **In-process model**: pocket-tts is loaded directly via `TTSModel.load_model()`.
+  No external daemon, no HTTP, no temp WAVs, no `afplay` subprocess.
+- **Native streaming**: chunks are produced by `generate_audio_stream` as the
+  model generates — first chunk arrives in ~80–200 ms, the rest stream in
+  while playback is already happening.
+- **Write-mode sounddevice**: the OutputStream is opened WITHOUT a callback,
+  so a Python writer thread calls `stream.write(chunk)` in blocking mode.
+  PortAudio's internal buffer absorbs all timing variation, and Python never
+  has to meet realtime deadlines — yielding clean, gap-free playback.
+- **Voice state cache**: `_voice_states` maps voice name → state, so the
+  expensive `get_state_for_audio_prompt` call only runs once per voice.
 
 ## Repo layout
 
@@ -143,7 +151,7 @@ pocket-tts-mcp/                          marketplace root
 │   ├── .mcp.json                        MCP server wired with ${CLAUDE_PLUGIN_ROOT}
 │   ├── skills/voice-mode/SKILL.md       /voice-mode skill
 │   ├── src/pocket_tts_mcp/              Python MCP source
-│   ├── pyproject.toml                   declares mcp + httpx + pocket-tts deps
+│   ├── pyproject.toml                   declares mcp + pocket-tts + sounddevice deps
 │   ├── uv.lock
 │   └── install.sh                       standalone installer (option B)
 ├── README.md
@@ -154,9 +162,45 @@ pocket-tts-mcp/                          marketplace root
 
 | Version | Highlights |
 |---|---|
-| **0.3.0** | Non-blocking `speak()` + internal playback queue + `stop_speaking()` tool. `status()` exposes queue depth and last error. Skill calls `stop_speaking()` at the start of every turn. |
-| 0.2.0     | Bundles the `pocket-tts` CLI as a dependency — no separate `uv tool install` required. Pinned Python `>=3.10,<3.14` (PyTorch wheels). |
-| 0.1.0     | Initial plugin form (manifest + marketplace + bundled MCP + skill). |
+| **0.4.0** | **In-process model + native streaming + write-mode sounddevice.** Drops the `pocket-tts serve` HTTP daemon entirely. TTFA drops from ~3 s to ~80–200 ms. Mirrors the [voxtral-mcp](https://github.com/Vincweb/voxtral-mcp) v0.4.0 architecture. |
+| 0.3.0     | Non-blocking `speak()` + internal playback queue + `stop_speaking()` tool (still daemon-backed). |
+| 0.2.0     | Bundles the `pocket-tts` CLI as a dependency. Pinned Python `>=3.10,<3.14`. |
+| 0.1.0     | Initial plugin form (marketplace + plugin manifest + bundled MCP + skill). |
+
+## pocket-tts-mcp vs voxtral-mcp
+
+Both plugins ship with the same MCP API (`speak`, `stop_speaking`, `status`),
+the same `/voice-mode` skill, and the same in-process Python + sounddevice
+write-mode pipeline (v0.4.0 on both sides). They differ in the model they
+wrap:
+
+|   | **pocket-tts-mcp** | [**voxtral-mcp**](https://github.com/Vincweb/voxtral-mcp) |
+|---|---|---|
+| Model | Kyutai Pocket TTS | Mistral Voxtral 4B |
+| Parameters | ~100 M | 4 B (40× larger) |
+| Voice quality | Synthetic but intelligible | More natural prosody |
+| **TTFA** (post-load) | **~80–200 ms** ⭐ | ~2 s |
+| Generation speed | ~4–5× real-time | ~2.4× real-time |
+| Resident RAM | ~1 GB | ~3 GB |
+| Disk (model cache) | ~1 GB | ~2.5 GB |
+| Apple Silicon required | No (works on Intel too) | Yes (MLX-only) |
+| Languages | EN, FR, ES, DE, IT, PT | EN, FR, ES, DE, IT, PT, NL, HI, AR |
+| Model licence | Permissive (Kyutai) | CC BY-NC 4.0 (non-commercial) |
+| Architecture | In-process via PyTorch | In-process via mlx-audio |
+
+**When to pick which:**
+
+- **pocket-tts-mcp** for snappy short summaries (TTFA matters more than
+  prosody on 1–3 sentences), low RAM footprint, multi-project workflows
+  where Cursor might hold multiple MCP instances, permissive licensing,
+  Intel Macs.
+- **voxtral-mcp** for long narration where the voice quality difference
+  is audible and you can spare 3 GB of RAM.
+
+You can install **both** plugins side-by-side — the MCP server names
+differ (`pocket-tts` vs `voxtral`) so the tools won't collide. The shared
+`/voice-mode` skill defaults to voxtral when both are available; you can
+override at runtime by asking Claude to "use pocket-tts" or "use voxtral".
 
 ## Uninstall
 
@@ -171,6 +215,8 @@ If installed standalone:
 rm -rf ~/.claude/skills/voice-mode
 # Remove the "pocket-tts" entry from your project's .mcp.json
 rm -rf ~/path/to/pocket-tts-mcp   # the clone
+# Optionally delete the cached model:
+rm -rf ~/.cache/huggingface/hub/models--kyutai--pocket-tts
 ```
 
 ## Why this and not the alternatives
@@ -180,12 +226,8 @@ rm -rf ~/path/to/pocket-tts-mcp   # the clone
 | ElevenLabs MCP | Best quality | Cloud, API key, costs |
 | macOS `say` MCP | Free, instant | Robotic voice |
 | Hook + regex extraction of `<speak>` tags | No MCP needed | Fragile: transcript parsing, race conditions, debugging hell |
-| **This** | Local, free, real voices, non-blocking, packaged as a plugin | First-call latency ~10 s, voice synthetic (Kyutai's lightweight model — not ElevenLabs-grade) |
-
-If you want higher voice quality and don't mind a heavier setup, the bigger
-[Kyutai TTS 1.6B](https://huggingface.co/kyutai/tts-1.6b-en_fr) or
-[Mistral Voxtral TTS](https://mistral.ai/news/voxtral-tts) are worth a look —
-the same plugin architecture would adapt to them by swapping the daemon.
+| [voxtral-mcp](https://github.com/Vincweb/voxtral-mcp) | More natural voice, 9 languages | 3× the RAM, ~10× slower TTFA, non-commercial licence, Apple Silicon only |
+| **This (pocket-tts-mcp)** | Local, free, fastest local TTFA, permissive licence, ~1 GB total footprint | Voice is synthetic — not ElevenLabs / Voxtral level |
 
 ## License
 

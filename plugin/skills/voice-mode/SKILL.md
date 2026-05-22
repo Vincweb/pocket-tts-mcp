@@ -1,6 +1,6 @@
 ---
 name: voice-mode
-description: "Spoken responses via Kyutai pocket-tts (local, fast TTFA ~80–200 ms, ~1 GB RAM, synthetic voice). Activate by saying \"parle-moi\", \"voice mode\", \"active le mode vocal\", \"use pocket-tts\", or invoking /pocket-tts:voice-mode. If the user also has voxtral-mcp installed and explicitly asks for voxtral's voice, defer to that skill instead."
+description: "Spoken responses via Kyutai pocket-tts (local, ~80–200 ms TTFA, ~1 GB RAM, synthetic voice). Activate by saying \"parle-moi\", \"voice mode\", \"active le mode vocal\", \"réponds-moi à l'oral\", or invoking /pocket-tts:voice-mode."
 ---
 
 # Voice Mode — Kyutai pocket-tts

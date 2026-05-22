@@ -15,8 +15,9 @@ When this skill fires, call `mcp__pocket-tts__speak` with a brief confirmation i
 
 For **every** subsequent turn, follow this pattern:
 
-1. Compose your normal text response (markdown, code blocks, links — as usual).
-2. **Also** call `mcp__pocket-tts__speak(text=...)` once with a **spoken summary** of the response — short, natural, conversational.
+1. **First, call `mcp__pocket-tts__stop_speaking()`** to drop any audio that may still be playing or queued from the previous turn. This prevents the user from hearing audio that no longer matches what's on screen.
+2. Compose your normal text response (markdown, code blocks, links — as usual).
+3. **Then** call `mcp__pocket-tts__speak(text=...)` once with a **spoken summary** of the response — short, natural, conversational. `speak()` is non-blocking — it returns as soon as the WAV is generated and lets audio play in the background.
 
 The spoken summary is NOT the same as the text. It's what you'd say if reading the answer to someone in person. The text is what you'd write.
 
@@ -55,6 +56,7 @@ Confirm deactivation in text only ("voice mode off, je ne parle plus jusqu'à no
 - ❌ Don't speak inline code spans verbatim (instead: "the function below" / "as shown").
 - ❌ Don't repeat the full response in audio — it's a summary, not a recitation.
 - ❌ Don't speak when the user explicitly typed something silent like a single command (`/status`, `/help`).
+- ❌ Don't forget to call `stop_speaking()` at the start of a turn — without it, an old turn's audio can overlap with the current one's text.
 
 ## Quick example
 

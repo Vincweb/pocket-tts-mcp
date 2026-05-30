@@ -80,21 +80,38 @@ When the user says any of "mute" / "silence" / "stop talking" / "arrête de parl
 - ❌ Don't call `stop_speaking()` or `speak(interrupt=True)` reflexively at every turn — it cuts off the last syllable of the previous turn and feels jumpy. Reserve interrupt for actual interruptions (see "When to interrupt").
 - ❌ Don't call both `stop_speaking()` and `speak()` in the same turn — `speak(interrupt=True)` does both atomically.
 
-## Quick example
+## Quick examples
 
-User: "qu'est-ce que tu penses de ce code ?"
+Each example shows the contrast: the **text** can have markdown, code,
+paths — the **speech** is the conversational gist a friend would say.
 
-Your response (text):
+### French
+
+User: "ce code marche pas, regarde"
+
+Text: a few lines explaining the bug, with the offending function name in backticks and a one-line fix in a code block.
+
+`speak()`:
+
 ```
-La logique est bonne, mais `validateUser` mélange auth et permissions.
-Je te propose de la splitter en deux fonctions :
-
-\`\`\`ts
-// before/after diff
-\`\`\`
+speak(
+  text="C'est un off-by-one dans la boucle, tu commences à un au lieu de zéro. Le fix est dans la réponse.",
+  language="french_24l",
+)
 ```
 
-Your `speak()` call:
+### English
+
+User: "is this PR ready to merge?"
+
+Text: a checklist — tests passing, lint clean, one minor docstring nit, link to the failing snapshot.
+
+`speak()`:
+
 ```
-text="La logique est bonne, mais la fonction valide l'utilisateur mélange deux responsabilités. Je te propose de la séparer en deux. Tu veux que je le fasse ?"
+speak(
+  text="Almost — one snapshot's stale and there's a tiny docstring nit. Two minutes of work. Want me to fix them?",
+  language="english",
+  voice="alba",
+)
 ```

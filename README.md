@@ -3,7 +3,7 @@
 Local-only voice for Claude Code on macOS, via [Kyutai Pocket TTS](https://github.com/kyutai-labs/pocket-tts).
 No cloud, no API keys, no rate limits.
 
-- 🇫🇷 French (Estelle), 🇬🇧 English (Alba), plus Spanish, German, Italian, Portuguese
+- 🇫🇷 French (Estelle), 🇬🇧 English (Alba — multilingual neutral voice), plus Spanish, German, Italian, Portuguese
 - **TTFA ~80–200 ms** thanks to native streaming via the pocket-tts Python API
 - ~4-5× real-time generation on Apple Silicon / Intel CPU — model stays warm in RAM
 - Non-blocking `speak()`, gap-free playback via `sounddevice` write-mode
@@ -81,10 +81,10 @@ wiring in one step:
 /plugin install kyutai-tts@vincweb-tools
 ```
 
-Restart Claude Code. On first use, `uvx` materializes the Python venv
-from the `mcp/` subdir of the repo (~30 s) and the Kyutai model
-downloads from Hugging Face (~1 GB, once per language). Subsequent runs
-are instant.
+Restart Claude Code. On first use, `uvx` pulls `kyutai-tts-mcp` from
+[PyPI](https://pypi.org/project/kyutai-tts-mcp/) (~30 s) and the Kyutai
+model downloads from Hugging Face (~1 GB, once per language). Subsequent
+runs are instant.
 
 > 💡 The plugin layer is a Claude Code feature; Cursor inherits it because
 > it ships the Claude Code CLI. Claude Desktop (the native app) and
@@ -97,10 +97,11 @@ In any conversation, type **`/voice-mode`** or say **"parle-moi"** / **"voice mo
 Claude will:
 
 - Reply with normal text (markdown, code, links — unchanged)
-- Call `stop_speaking()` at the start of each turn to drop any audio still
-  playing from the previous turn (prevents desync between text and voice)
 - Call `speak()` with a short spoken summary of the turn (1–3 sentences,
   audio plays in the background while Claude continues with other work)
+- Let consecutive turns' audio queue and play sequentially — no choppy
+  cuts mid-sentence. When you interrupt ("non", "wait"), Claude calls
+  `speak(..., interrupt=True)` to abort and restart cleanly.
 - Skip speaking pure code dumps / long diffs
 
 Stop with **"mute"**, **"silence"**, **"stop talking"**, **"arrête de parler"**.
@@ -147,7 +148,7 @@ You can also pass any Hugging Face voice URL (`hf://...`) or a path to a `.wav` 
 for voice cloning — pocket-tts builds the voice state from the audio prompt on first
 use, then caches it for subsequent calls.
 
-## Architecture (v0.4.0)
+## Architecture
 
 ```
 Claude Code  ──MCP stdio──▶  kyutai-tts-mcp (Python, FastMCP)
@@ -196,7 +197,7 @@ Key design choices:
 
 ```
 kyutai-tts-mcp/                          repo root
-├── mcp/                                 the MCP server (future PyPI artifact)
+├── mcp/                                 the MCP server (published to PyPI)
 │   ├── src/kyutai_tts_mcp/              Python source
 │   ├── pyproject.toml                   declares mcp + pocket-tts + sounddevice deps
 │   └── uv.lock
@@ -218,7 +219,7 @@ discover and wire it up (Option B).
 
 | Version | Highlights |
 |---|---|
-| **0.5.0** | **Multi-language at runtime.** `speak(text, voice?, language?)` — pass `language=` per call to switch model on the fly (lazy load, ~3-5 s on first use of a new language). Repo split into `mcp/` (the Python package) and `plugin/` (the Claude Code wrapper); `install.sh` retired in favor of `uvx`. |
+| **0.5.0** | **Renamed `pocket-tts-mcp` → `kyutai-tts-mcp`** (the previous name was taken on PyPI by an unrelated project). **First PyPI release.** **Multi-language at runtime** — `speak(text, voice?, language?)` switches model on the fly (lazy load, ~3-5 s on first use). Repo split into `mcp/` (Python package) + `plugin/` (Claude Code wrapper); `install.sh` retired in favor of `uvx`. CI release workflow via OIDC Trusted Publishing. |
 | 0.4.0     | **In-process model + native streaming + write-mode sounddevice.** Drops the `pocket-tts serve` HTTP daemon entirely. TTFA drops from ~3 s to ~80–200 ms. Mirrors the [voxtral-mcp](https://github.com/Vincweb/voxtral-mcp) v0.4.0 architecture. |
 | 0.3.0     | Non-blocking `speak()` + internal playback queue + `stop_speaking()` tool (still daemon-backed). |
 | 0.2.0     | Bundles the `pocket-tts` CLI as a dependency. Pinned Python `>=3.10,<3.14`. |

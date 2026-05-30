@@ -3,8 +3,6 @@
     "kyutai-tts": {
       "command": "uvx",
       "args": [
-        "--from",
-        "git+https://github.com/Vincweb/kyutai-tts-mcp.git#subdirectory=mcp",
         "kyutai-tts-mcp",
         "--language",
         "french_24l"

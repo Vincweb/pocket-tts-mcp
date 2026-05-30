@@ -38,8 +38,6 @@ Add this entry to the `mcpServers` block of your project's `.mcp.json`
     "kyutai-tts": {
       "command": "uvx",
       "args": [
-        "--from",
-        "git+https://github.com/Vincweb/kyutai-tts-mcp.git#subdirectory=mcp",
         "kyutai-tts-mcp",
         "--language",
         "french_24l"
@@ -49,9 +47,11 @@ Add this entry to the `mcpServers` block of your project's `.mcp.json`
 }
 ```
 
-`uvx` pulls the package from GitHub on first launch, caches the venv, and
-spawns the MCP. No clone, no local `install.sh`. (Once the package lands
-on PyPI, the `--from` lines drop and you launch with `"args": ["kyutai-tts-mcp", "--language", "..."]`.)
+`uvx` pulls the package from [PyPI](https://pypi.org/project/kyutai-tts-mcp/)
+on first launch, caches the venv, and spawns the MCP. No clone, no local
+install script. If you'd rather have the binary persistent in `~/.local/bin`,
+`uv tool install kyutai-tts-mcp` once and use `"command": "kyutai-tts-mcp"` in
+the JSON instead.
 
 Replace `french_24l` with whatever language you mostly speak (`english`,
 `spanish_24l`, `german_24l`, `italian_24l`, `portuguese_24l`). Per-call

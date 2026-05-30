@@ -1,4 +1,4 @@
-# Roadmap — pocket-tts-mcp
+# Roadmap — kyutai-tts-mcp
 
 Current state: v0.4.2 published on GitHub. In-process model, native streaming,
 write-mode sounddevice. README and SKILL cleaned up; install order swapped to
@@ -8,8 +8,8 @@ MCP-first. No PyPI, no Docker, not submitted to any directory yet.
 
 ## 1. Publish on PyPI
 
-**Why**: cleanest install UX — `uv tool install pocket-tts-mcp` or
-`pipx install pocket-tts-mcp` everywhere. Removes the "clone the repo first"
+**Why**: cleanest install UX — `uv tool install kyutai-tts-mcp` or
+`pipx install kyutai-tts-mcp` everywhere. Removes the "clone the repo first"
 friction.
 
 **Effort**: ~20 min (account + token + pyproject metadata + `uv publish`).
@@ -24,9 +24,9 @@ friction.
    - `keywords = ["mcp", "tts", "kyutai", "claude", "voice"]`
    - `classifiers = [...]` (Beta, MIT, OS Independent, Python 3.10+, Audio)
    - `[project.urls]` block (Homepage, Repository, Issues)
-3. Verify name is free: `curl -sI https://pypi.org/pypi/pocket-tts-mcp/json` returns 404.
+3. Verify name is free: `curl -sI https://pypi.org/pypi/kyutai-tts-mcp/json` returns 404.
 4. From `plugin/`: `uv build` then `uv publish --token "$PYPI_TOKEN"`.
-5. Test from a fresh shell: `uv tool install pocket-tts-mcp` → `pocket-tts-mcp --help`.
+5. Test from a fresh shell: `uv tool install kyutai-tts-mcp` → `kyutai-tts-mcp --help`.
 
 **Then**: update the README to mention the PyPI path as Option A1 (even
 simpler than `uv tool install` from git).

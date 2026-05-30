@@ -1,7 +1,6 @@
 """MCP server wrapping Kyutai Pocket TTS via its native Python streaming API.
 
-Replaces the v0.3.x architecture (which shelled out to `pocket-tts serve`
-and POSTed full WAVs to it). The new pipeline:
+Pipeline:
 
   speak() request
       └─► generation thread: tts_model.generate_audio_stream(...) yields
@@ -11,10 +10,13 @@ and POSTed full WAVs to it). The new pipeline:
                           write-mode sounddevice OutputStream
                               └─► CoreAudio
 
-No external daemon, no HTTP, no temp WAV files, no afplay. First audio
-in ~200 ms (Kyutai's claim), playback is gap-free thanks to PortAudio's
-internal buffer (Python never runs in the realtime audio thread).
+Multi-language: each `speak()` can specify a `language` argument. Models
+are loaded lazily and cached per-language, so the first call to a new
+language pays ~3-5 s load time and ~1 GB resident RAM; subsequent calls
+in that language are instant. All pocket-tts models share the mimi codec
+at 24 kHz, so a single OutputStream serves every language.
 """
+import argparse
 import atexit
 import os
 import queue
@@ -25,21 +27,24 @@ import numpy as np
 import sounddevice as sd
 from mcp.server.fastmcp import FastMCP
 
-LANGUAGE = os.environ.get("POCKET_TTS_LANGUAGE", "french_24l")
-DEFAULT_VOICE = os.environ.get("POCKET_TTS_VOICE")  # None → language default
-QUANTIZE = os.environ.get("POCKET_TTS_QUANTIZE", "0") == "1"
-DEVICE = os.environ.get("POCKET_TTS_DEVICE", "cpu")
-MAX_TOKENS = int(os.environ.get("POCKET_TTS_MAX_TOKENS", "50"))
+# Mutable: overridden by main() after CLI parsing. The CLI default itself
+# falls back to KYUTAI_TTS_LANGUAGE env, then to "french_24l".
+DEFAULT_LANGUAGE = os.environ.get("KYUTAI_TTS_LANGUAGE", "french_24l")
+DEFAULT_VOICE = os.environ.get("KYUTAI_TTS_VOICE")  # None → language default
+QUANTIZE = os.environ.get("KYUTAI_TTS_QUANTIZE", "0") == "1"
+DEVICE = os.environ.get("KYUTAI_TTS_DEVICE", "cpu")
+MAX_TOKENS = int(os.environ.get("KYUTAI_TTS_MAX_TOKENS", "50"))
 
-mcp = FastMCP("pocket-tts")
+mcp = FastMCP("kyutai-tts")
 
-_model: Any = None
-_model_lock = threading.Lock()
-_model_load_error: str | None = None
-_sample_rate: int | None = None  # discovered from model.config.mimi.sample_rate
+# Per-language model cache. Built lazily on first speak() in that language.
+_models: dict[str, Any] = {}
+_models_lock = threading.Lock()
+_model_load_errors: dict[str, str] = {}
+_sample_rate: int | None = None  # set by the first loaded model; all share 24 kHz
 
-# Per-voice state cache. Built lazily on first use of a voice.
-_voice_states: dict[str, Any] = {}
+# Per-(language, voice) state cache. Voice state is tied to its model.
+_voice_states: dict[tuple[str, str], Any] = {}
 _voice_states_lock = threading.Lock()
 
 # Audio queue: generation thread puts numpy chunks, writer thread calls
@@ -50,7 +55,7 @@ _stream: sd.OutputStream | None = None
 _stream_lock = threading.Lock()
 
 # Generation queue (FIFO of speak requests).
-_gen_q: "queue.Queue[tuple[str, str | None] | None]" = queue.Queue()
+_gen_q: "queue.Queue[tuple[str, str | None, str] | None]" = queue.Queue()
 _gen_thread: threading.Thread | None = None
 _cancel_event = threading.Event()
 _gen_in_flight = threading.Event()
@@ -58,40 +63,52 @@ _gen_in_flight = threading.Event()
 _last_error: str | None = None
 
 
-def _ensure_model() -> Any:
-    global _model, _model_load_error, _sample_rate
-    with _model_lock:
-        if _model is not None:
-            return _model
+def _ensure_model(language: str) -> Any:
+    global _sample_rate
+    with _models_lock:
+        if language in _models:
+            return _models[language]
         try:
             from pocket_tts.models.tts_model import TTSModel  # heavy import
-            model = TTSModel.load_model(language=LANGUAGE, quantize=QUANTIZE)
+            model = TTSModel.load_model(language=language, quantize=QUANTIZE)
             model.to(DEVICE)
-            _sample_rate = int(model.config.mimi.sample_rate)
-            _model = model
-            return _model
+            sr = int(model.config.mimi.sample_rate)
+            if _sample_rate is None:
+                _sample_rate = sr
+            elif sr != _sample_rate:
+                # Defensive — pocket-tts uses mimi 24 kHz everywhere today,
+                # but if this ever diverges, the single shared OutputStream
+                # would resample-by-skew. Surface the mismatch loudly.
+                raise RuntimeError(
+                    f"sample-rate mismatch: {language} reports {sr} Hz, "
+                    f"stream is at {_sample_rate} Hz"
+                )
+            _models[language] = model
+            _model_load_errors.pop(language, None)
+            return model
         except Exception as e:  # noqa: BLE001
-            _model_load_error = f"{type(e).__name__}: {e}"
+            _model_load_errors[language] = f"{type(e).__name__}: {e}"
             raise
 
 
-def _resolve_voice(voice: str | None) -> str:
+def _resolve_voice(voice: str | None, language: str) -> str:
     if voice:
         return voice
     if DEFAULT_VOICE:
         return DEFAULT_VOICE
     from pocket_tts.main import get_default_voice_for_language
-    return get_default_voice_for_language(LANGUAGE)
+    return get_default_voice_for_language(language)
 
 
-def _voice_state_for(voice: str) -> Any:
+def _voice_state_for(voice: str, language: str) -> Any:
+    key = (language, voice)
     with _voice_states_lock:
-        if voice in _voice_states:
-            return _voice_states[voice]
-    model = _ensure_model()
+        if key in _voice_states:
+            return _voice_states[key]
+    model = _ensure_model(language)
     state = model.get_state_for_audio_prompt(voice)
     with _voice_states_lock:
-        _voice_states[voice] = state
+        _voice_states[key] = state
     return state
 
 
@@ -166,13 +183,13 @@ def _generation_loop() -> None:
         req = _gen_q.get()
         if req is None:
             return
-        text, voice_arg = req
+        text, voice_arg, language = req
         _cancel_event.clear()
         _gen_in_flight.set()
         try:
-            model = _ensure_model()
-            voice = _resolve_voice(voice_arg)
-            voice_state = _voice_state_for(voice)
+            model = _ensure_model(language)
+            voice = _resolve_voice(voice_arg, language)
+            voice_state = _voice_state_for(voice, language)
             opened_stream = False
             for chunk in model.generate_audio_stream(
                 model_state=voice_state,
@@ -237,7 +254,11 @@ atexit.register(_cleanup)
 
 
 @mcp.tool()
-def speak(text: str, voice: str | None = None) -> str:
+def speak(
+    text: str,
+    voice: str | None = None,
+    language: str | None = None,
+) -> str:
     """Speak text aloud through Kyutai Pocket TTS (local, streaming, ~200ms TTFA).
 
     Returns immediately. The text is queued for streaming generation in a
@@ -250,17 +271,26 @@ def speak(text: str, voice: str | None = None) -> str:
     in-flight generation.
 
     Args:
-        text: Text to read aloud. The model language is fixed at startup
-              via POCKET_TTS_LANGUAGE (default `french_24l`).
+        text: Text to read aloud. Match the language to the text — passing
+              French text with `language="english"` will produce garbled output.
         voice: Built-in voice name (e.g. "estelle", "alba", "giovanni",
                "juergen", "lola", "rafael"), or a path to a wav file for
                voice cloning, or a `hf://` URL. Defaults to the language's
                built-in voice.
+        language: Pocket-tts model to use for this call. Options include
+                  "french_24l", "english", "english_2026-04",
+                  "spanish_24l", "german_24l", "italian_24l",
+                  "portuguese_24l". Defaults to the server's default
+                  language (set via the --language CLI flag, the
+                  KYUTAI_TTS_LANGUAGE env var, or "french_24l"). The
+                  model loads on first use of a given language (~3-5 s
+                  + ~1 GB RAM), then stays cached.
     """
+    lang = language or DEFAULT_LANGUAGE
     _ensure_gen_thread()
-    _gen_q.put((text, voice))
+    _gen_q.put((text, voice, lang))
     return (
-        f"enqueued {len(text)} chars (voice={voice or 'default'}, "
+        f"enqueued {len(text)} chars (lang={lang}, voice={voice or 'default'}, "
         f"gen_pending={_gen_q.qsize()}, audio_buffer={_audio_q.qsize()})"
     )
 
@@ -290,19 +320,24 @@ def stop_speaking() -> str:
 
 @mcp.tool()
 def status() -> dict:
-    """Report model load state, queue depths, and last error."""
+    """Report loaded languages, queue depths, and last error."""
     with _stream_lock:
         stream_active = (
             _stream is not None
             and not _stream.closed
             and not _stream.stopped
         )
+    with _models_lock:
+        loaded = sorted(_models.keys())
+        errors = dict(_model_load_errors)
+    with _voice_states_lock:
+        cached_voices = sorted(f"{lang}:{v}" for lang, v in _voice_states)
     return {
-        "language": LANGUAGE,
-        "model_loaded": _model is not None,
-        "model_load_error": _model_load_error,
+        "default_language": DEFAULT_LANGUAGE,
+        "loaded_languages": loaded,
+        "model_load_errors": errors,
         "sample_rate": _sample_rate,
-        "cached_voices": list(_voice_states.keys()),
+        "cached_voices": cached_voices,
         "gen_pending": _gen_q.qsize(),
         "gen_in_flight": _gen_in_flight.is_set(),
         "audio_buffer": _audio_q.qsize(),
@@ -312,6 +347,23 @@ def status() -> dict:
 
 
 def main() -> None:
+    global DEFAULT_LANGUAGE
+    parser = argparse.ArgumentParser(
+        prog="kyutai-tts-mcp",
+        description="MCP server wrapping Kyutai Pocket TTS (multi-language, streaming).",
+    )
+    parser.add_argument(
+        "--language",
+        default=DEFAULT_LANGUAGE,
+        help=(
+            "Default language used when speak() is called without an explicit "
+            "language= arg. Per-call language= always wins. "
+            "Falls back to KYUTAI_TTS_LANGUAGE env, then to 'french_24l'. "
+            f"(current default: {DEFAULT_LANGUAGE})"
+        ),
+    )
+    args = parser.parse_args()
+    DEFAULT_LANGUAGE = args.language
     mcp.run()
 
 

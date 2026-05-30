@@ -1,17 +1,14 @@
 {
   "mcpServers": {
-    "pocket-tts": {
-      "command": "uv",
+    "kyutai-tts": {
+      "command": "uvx",
       "args": [
-        "run",
-        "--directory",
-        "${CLAUDE_PLUGIN_ROOT}",
-        "pocket-tts-mcp"
-      ],
-      "env": {
-        "POCKET_TTS_LANGUAGE": "french_24l",
-        "POCKET_TTS_PORT": "8765"
-      }
+        "--from",
+        "git+https://github.com/Vincweb/kyutai-tts-mcp.git#subdirectory=mcp",
+        "kyutai-tts-mcp",
+        "--language",
+        "french_24l"
+      ]
     }
   }
 }

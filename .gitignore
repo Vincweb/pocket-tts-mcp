@@ -1,13 +1,20 @@
+# Python
 .venv/
+
+# Python cache
 __pycache__/
+
+# Python compiled files
 *.pyc
 *.pyo
 *.egg-info/
+
+# Build
 dist/
 build/
-.DS_Store
-.python-version
 
-# Local notes — not for public distribution
-NOTES.md
-TODO.md
+# macOS
+.DS_Store
+
+# Python version
+.python-version

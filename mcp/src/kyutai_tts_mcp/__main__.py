@@ -219,23 +219,12 @@ def _ensure_gen_thread() -> None:
         _gen_thread.start()
 
 
-def _drain_audio_q() -> int:
+def _drain(q: "queue.Queue[Any]") -> int:
+    """Drain all items from `q`, ignoring None sentinels. Returns count dropped."""
     dropped = 0
     while True:
         try:
-            x = _audio_q.get_nowait()
-        except queue.Empty:
-            return dropped
-        if x is None:
-            continue
-        dropped += 1
-
-
-def _drain_gen_q() -> int:
-    dropped = 0
-    while True:
-        try:
-            x = _gen_q.get_nowait()
+            x = q.get_nowait()
         except queue.Empty:
             return dropped
         if x is None:
@@ -250,8 +239,8 @@ def _abort_all() -> tuple[int, int]:
     Returns (audio_chunks_dropped, pending_requests_dropped).
     """
     _cancel_event.set()
-    dropped_gen = _drain_gen_q()
-    dropped_audio = _drain_audio_q()
+    dropped_gen = _drain(_gen_q)
+    dropped_audio = _drain(_audio_q)
     with _stream_lock:
         if _stream is not None and not _stream.closed:
             try:
@@ -263,8 +252,8 @@ def _abort_all() -> tuple[int, int]:
 
 def _cleanup() -> None:
     _cancel_event.set()
-    _drain_audio_q()
-    _drain_gen_q()
+    _drain(_audio_q)
+    _drain(_gen_q)
     _close_stream()
 
 

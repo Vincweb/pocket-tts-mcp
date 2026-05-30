@@ -113,8 +113,8 @@ hear the start of the audio almost immediately, even on long texts.
 
 | Tool | Purpose |
 |---|---|
-| `speak(text, voice?, language?)` | Generate audio for `text` and **queue it for background playback**. Returns immediately; streaming generation feeds the audio stream while you keep working. Multiple calls queue and play sequentially — no overlap. Pass `language=` per call to switch model on the fly (e.g. `english`, `spanish_24l`) — first use of a new language pays a one-time ~3-5 s load + ~1 GB RAM, then cached. |
-| `stop_speaking()` | Stop the currently-playing audio, drop everything queued behind it, and cancel any in-flight generation. Use at the start of a new turn to clear stale audio. |
+| `speak(text, voice?, language?, interrupt?)` | Generate audio for `text` and **queue it for background playback**. Returns immediately; streaming generation feeds the audio stream while you keep working. By default, multiple calls queue and play sequentially — including across conversational turns. Pass `interrupt=True` to abort current playback and clear the queue first (use when the user has clearly interrupted). Pass `language=` per call to switch model on the fly (`english`, `spanish_24l`, etc.) — first use of a new language pays a one-time ~3-5 s load + ~1 GB RAM, then cached. |
+| `stop_speaking()` | Stop playback, drop the queue, cancel in-flight generation. Use when the user explicitly asked to be quiet ("mute" / "silence"). For mid-turn interruption where you still want to speak something new, use `speak(text, interrupt=True)` instead — it does both atomically. |
 | `status()` | Report loaded languages, sample rate, cached voices, queue depths, last error. |
 
 ## Configuration

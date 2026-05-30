@@ -44,8 +44,8 @@ Replace `french_24l` with `english`, `spanish_24l`, `german_24l`,
 
 | Tool | Purpose |
 |---|---|
-| `speak(text, voice?, language?)` | Generate audio for `text` and queue it for background playback. Returns immediately, streaming generation. Pass `language=` to switch model on the fly. |
-| `stop_speaking()` | Stop current playback, drop queue, cancel in-flight generation. |
+| `speak(text, voice?, language?, interrupt?)` | Generate audio for `text` and queue it for background playback. Returns immediately, streaming generation. By default, calls queue and play sequentially (including across turns). Pass `interrupt=True` to abort current playback and clear the queue first. Pass `language=` to switch model on the fly. |
+| `stop_speaking()` | Stop current playback, drop queue, cancel in-flight generation. Use for explicit "mute" requests. For mid-turn interruption + new speech, use `speak(..., interrupt=True)` instead. |
 | `status()` | Report loaded languages, queue depths, sample rate, last error. |
 
 ## Configuration

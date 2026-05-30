@@ -15,11 +15,24 @@ When this skill fires, call `mcp__kyutai-tts__speak` with a brief confirmation i
 
 For **every** subsequent turn, follow this pattern:
 
-1. **First, call `mcp__kyutai-tts__stop_speaking()`** to drop any audio that may still be playing or queued from the previous turn. This prevents the user from hearing audio that no longer matches what's on screen.
-2. Compose your normal text response (markdown, code blocks, links — as usual).
-3. **Then** call `mcp__kyutai-tts__speak(text=...)` once with a **spoken summary** of the response — short, natural, conversational. `speak()` is non-blocking — it returns as soon as the WAV is generated and lets audio play in the background.
+1. Compose your normal text response (markdown, code blocks, links — as usual).
+2. Call `mcp__kyutai-tts__speak(text=...)` once with a **spoken summary** of the response — short, natural, conversational. `speak()` is non-blocking — it returns immediately and lets streaming generation feed audio into the background queue. Multiple turns' audio queue and play sequentially; you don't have to manage the queue yourself.
 
 The spoken summary is NOT the same as the text. It's what you'd say if reading the answer to someone in person. The text is what you'd write.
+
+### When to interrupt instead of queuing
+
+By default, audio from previous turns keeps playing through into the next — this is what you want most of the time (natural conversational flow, no choppy cuts). **Only when the user has clearly interrupted**, pass `interrupt=True` to abort current playback and clear the queue before this turn's speech:
+
+- The user said "non", "wait", "attends", "stop a sec" mid-playback
+- The user's message is unusually short / impatient and arrives suspiciously fast (likely cut you off)
+- The user has switched topic entirely — the previous turn's audio would be stale context
+
+```python
+mcp__kyutai-tts__speak(text="...", interrupt=True)
+```
+
+If you're unsure, **don't interrupt** — let the previous audio finish. Over-interrupting cuts off the last syllable of every turn and feels jumpy.
 
 ## Rules for the spoken summary
 
@@ -52,10 +65,10 @@ If the user asks for a specific voice ("parle avec la voix de Rafael"), use that
 
 ## Deactivation
 
-Stop calling `mcp__kyutai-tts__speak` when the user says any of:
-- "mute" / "silence" / "stop talking" / "arrête de parler" / "désactive le mode vocal" / "/voice-mode off"
+When the user says any of "mute" / "silence" / "stop talking" / "arrête de parler" / "désactive le mode vocal" / "/voice-mode off":
 
-Confirm deactivation in text only ("voice mode off, je ne parle plus jusqu'à nouvel ordre").
+1. Call `mcp__kyutai-tts__stop_speaking()` once to silence whatever is mid-playback.
+2. Stop calling `speak()` for the rest of the conversation. Confirm in text only: "voice mode off, je ne parle plus jusqu'à nouvel ordre".
 
 ## Anti-patterns — do not
 
@@ -64,7 +77,8 @@ Confirm deactivation in text only ("voice mode off, je ne parle plus jusqu'à no
 - ❌ Don't speak inline code spans verbatim (instead: "the function below" / "as shown").
 - ❌ Don't repeat the full response in audio — it's a summary, not a recitation.
 - ❌ Don't speak when the user explicitly typed something silent like a single command (`/status`, `/help`).
-- ❌ Don't forget to call `stop_speaking()` at the start of a turn — without it, an old turn's audio can overlap with the current one's text.
+- ❌ Don't call `stop_speaking()` or `speak(interrupt=True)` reflexively at every turn — it cuts off the last syllable of the previous turn and feels jumpy. Reserve interrupt for actual interruptions (see "When to interrupt").
+- ❌ Don't call both `stop_speaking()` and `speak()` in the same turn — `speak(interrupt=True)` does both atomically.
 
 ## Quick example
 

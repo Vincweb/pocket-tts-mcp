@@ -296,6 +296,7 @@ discover and wire it up (Option B).
 
 | Version | Highlights |
 |---|---|
+| **0.6.0** | **`speak(interrupt=True)`** to abort current playback before speaking (replaces the always-`stop_speaking()`-first pattern — audio now queues across turns naturally). **`kyutai-tts-mcp extract-voice` CLI** pre-extracts voice states to `.safetensors` for instant loading. Voice cloning docs (HF auth + recording recommendations). |
 | **0.5.0** | **Renamed `pocket-tts-mcp` → `kyutai-tts-mcp`** (the previous name was taken on PyPI by an unrelated project). **First PyPI release.** **Multi-language at runtime** — `speak(text, voice?, language?)` switches model on the fly (lazy load, ~3-5 s on first use). Repo split into `mcp/` (Python package) + `plugin/` (Claude Code wrapper); `install.sh` retired in favor of `uvx`. CI release workflow via OIDC Trusted Publishing. |
 | 0.4.0     | **In-process model + native streaming + write-mode sounddevice.** Drops the `pocket-tts serve` HTTP daemon entirely. TTFA drops from ~3 s to ~80–200 ms. Mirrors the [voxtral-mcp](https://github.com/Vincweb/voxtral-mcp) v0.4.0 architecture. |
 | 0.3.0     | Non-blocking `speak()` + internal playback queue + `stop_speaking()` tool (still daemon-backed). |

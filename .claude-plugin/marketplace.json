@@ -9,7 +9,7 @@
       "name": "kyutai-tts",
       "source": "./plugin",
       "description": "Local-only voice for Claude Code via Kyutai Pocket TTS (French + 5 langs, multi-language at runtime).",
-      "version": "0.5.0"
+      "version": "0.6.0"
     }
   ]
 }

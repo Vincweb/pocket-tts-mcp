@@ -21,22 +21,31 @@ import atexit
 import os
 import queue
 import threading
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 import sounddevice as sd
 from mcp.server.fastmcp import FastMCP
 
-# Mutable: overridden by main() after CLI parsing. The CLI default itself
-# falls back to KYUTAI_TTS_LANGUAGE env, then to "french_24l".
+from .extract import run_extract_voice
+
+
+# ── Config (environment variables) ────────────────────────────────────────────
+# Mutable: DEFAULT_LANGUAGE is overridden by main() after CLI parsing.
+# The CLI default itself falls back to KYUTAI_TTS_LANGUAGE env, then to "french_24l".
 DEFAULT_LANGUAGE = os.environ.get("KYUTAI_TTS_LANGUAGE", "french_24l")
 DEFAULT_VOICE = os.environ.get("KYUTAI_TTS_VOICE")  # None → language default
 QUANTIZE = os.environ.get("KYUTAI_TTS_QUANTIZE", "0") == "1"
 DEVICE = os.environ.get("KYUTAI_TTS_DEVICE", "cpu")
 MAX_TOKENS = int(os.environ.get("KYUTAI_TTS_MAX_TOKENS", "50"))
 
+
+# ── Server instance ───────────────────────────────────────────────────────────
 mcp = FastMCP("kyutai-tts")
 
+
+# ── State: caches, queues, threads ────────────────────────────────────────────
 # Per-language model cache. Built lazily on first speak() in that language.
 _models: dict[str, Any] = {}
 _models_lock = threading.Lock()
@@ -63,6 +72,7 @@ _gen_in_flight = threading.Event()
 _last_error: str | None = None
 
 
+# ── Model & voice loading ─────────────────────────────────────────────────────
 def _ensure_model(language: str) -> Any:
     global _sample_rate
     with _models_lock:
@@ -112,6 +122,7 @@ def _voice_state_for(voice: str, language: str) -> Any:
     return state
 
 
+# ── Audio output (stream + writer thread) ─────────────────────────────────────
 def _ensure_stream() -> None:
     global _stream
     sr = _sample_rate or 24000
@@ -163,6 +174,7 @@ def _ensure_writer() -> None:
         _writer_thread.start()
 
 
+# ── Generation pipeline ───────────────────────────────────────────────────────
 def _chunk_to_float32(chunk: Any) -> np.ndarray:
     # pocket-tts yields torch.Tensor on CPU. Defensive: support numpy too.
     try:
@@ -219,6 +231,7 @@ def _ensure_gen_thread() -> None:
         _gen_thread.start()
 
 
+# ── Queue draining & cleanup ──────────────────────────────────────────────────
 def _drain(q: "queue.Queue[Any]") -> int:
     """Drain all items from `q`, ignoring None sentinels. Returns count dropped."""
     dropped = 0
@@ -260,6 +273,7 @@ def _cleanup() -> None:
 atexit.register(_cleanup)
 
 
+# ── MCP tools ─────────────────────────────────────────────────────────────────
 @mcp.tool()
 def speak(
     text: str,
@@ -357,6 +371,7 @@ def status() -> dict:
     }
 
 
+# ── CLI entry ─────────────────────────────────────────────────────────────────
 def main() -> None:
     global DEFAULT_LANGUAGE
     parser = argparse.ArgumentParser(
@@ -373,7 +388,53 @@ def main() -> None:
             f"(current default: {DEFAULT_LANGUAGE})"
         ),
     )
+
+    subparsers = parser.add_subparsers(dest="command", metavar="COMMAND")
+
+    extract = subparsers.add_parser(
+        "extract-voice",
+        help="Encode an audio sample into a .safetensors voice state",
+        description=(
+            "Pre-extract a voice state from an audio sample, save to a "
+            ".safetensors file. The output can be passed back to "
+            "speak(voice=...) for instant voice loading. Requires the "
+            "cloning-enabled checkpoint (accept terms at "
+            "https://huggingface.co/kyutai/pocket-tts + hf auth login)."
+        ),
+    )
+    extract.add_argument(
+        "--audio", "-i", required=True,
+        help="Source audio: local path, hf:// URL, or https:// URL. "
+             "Any format pocket-tts can decode (wav, mp3, flac, ...).",
+    )
+    extract.add_argument(
+        "--out", "-o", required=True,
+        help="Destination .safetensors path",
+    )
+    extract.add_argument(
+        "--language", default=DEFAULT_LANGUAGE,
+        help="Pocket-tts language model to use for encoding "
+             f"(default: {DEFAULT_LANGUAGE})",
+    )
+    extract.add_argument(
+        "--truncate", action="store_true",
+        help="Truncate the audio to 30 s before encoding "
+             "(recommended for long inputs to avoid memory pressure)",
+    )
+
     args = parser.parse_args()
+
+    if args.command == "extract-voice":
+        run_extract_voice(
+            audio=args.audio,
+            out=Path(args.out),
+            language=args.language,
+            truncate=args.truncate,
+            quantize=QUANTIZE,
+            device=DEVICE,
+        )
+        return
+
     DEFAULT_LANGUAGE = args.language
     mcp.run()
 

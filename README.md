@@ -144,9 +144,86 @@ Pass `voice="..."` in your conversation ("parle avec la voix de Rafael"):
 | `giovanni` | `italian_24l` | |
 | `rafael` | `portuguese_24l` | |
 
-You can also pass any Hugging Face voice URL (`hf://...`) or a path to a `.wav` file
-for voice cloning — pocket-tts builds the voice state from the audio prompt on first
-use, then caches it for subsequent calls.
+You can also pass any Hugging Face voice URL (`hf://kyutai/tts-voices/...`)
+to use one of Kyutai's published voices, or use a custom voice — see below.
+
+## Voice cloning (custom voices)
+
+Pocket-tts can clone a voice from a short audio sample. The cloning is
+**100 % local** — your audio never leaves the machine — but the
+cloning-enabled model checkpoint is gated on Hugging Face, so there's a
+one-time setup before you can pass a custom audio path to `speak()`.
+
+### 1. One-time Hugging Face setup
+
+1. Create a (free) account at [huggingface.co](https://huggingface.co/join).
+2. Visit [huggingface.co/kyutai/pocket-tts](https://huggingface.co/kyutai/pocket-tts)
+   and click **"Agree and access repository"** to accept the terms.
+3. Generate a [read token](https://huggingface.co/settings/tokens).
+4. Install the CLI and authenticate:
+
+   ```bash
+   uv tool install huggingface-hub
+   hf auth login          # paste the token
+   ```
+
+5. Clear any previously-cached non-cloning checkpoint so the cloning-
+   enabled one downloads on next run:
+
+   ```bash
+   rm -rf ~/.cache/huggingface/hub/models--kyutai--pocket-tts
+   ```
+
+On the next `speak()` call, the cloning-capable checkpoint (~1 GB)
+downloads once. Without this setup, pocket-tts silently falls back to a
+non-cloning checkpoint and any custom-audio voice raises a
+`ValueError(VOICE_CLONING_UNSUPPORTED)`.
+
+### 2. Record a sample
+
+Recommendations for a good clone:
+
+- **10-30 seconds**, single speaker (you), clean audio (no music, no
+  background conversation)
+- **Neutral reading style** (a paragraph from a book) beats spontaneous
+  speech — avoids cloning "uh / um" fillers
+- **Match the target language** (FR sample → FR speech)
+- Any format pocket-tts can decode: `.wav`, `.mp3`, `.flac`, `.m4a`, …
+  Auto-resampled to 24 kHz.
+
+### 3. Use the sample directly (lazy)
+
+The simplest path — pass the audio file to `speak()`:
+
+```
+speak(text="…", voice="/Users/you/voices/yours.wav", language="french_24l")
+```
+
+The first call encodes the sample (~2-5 s) and caches the voice state for
+the rest of the session. Restarting the server discards the cache.
+
+### 4. Pre-extract for instant loading (`.safetensors`)
+
+If you use the same voice across sessions, pre-extract it once with the
+`extract-voice` CLI subcommand:
+
+```bash
+uvx kyutai-tts-mcp extract-voice \
+  --audio ~/voices/yours.wav \
+  --out ~/voices/yours.safetensors \
+  --language french_24l \
+  --truncate
+```
+
+Then pass the `.safetensors` file to `speak(voice=...)` — loading is
+near-instant (skips Mimi encoding + latent projection):
+
+```
+speak(text="…", voice="/Users/you/voices/yours.safetensors", language="french_24l")
+```
+
+The `.safetensors` file is small (a few KB), portable, and contains only
+the voice state — no audio.
 
 ## Architecture
 

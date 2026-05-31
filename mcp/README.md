@@ -58,6 +58,32 @@ The default language is set via `--language` (CLI) or `KYUTAI_TTS_LANGUAGE`
 - `KYUTAI_TTS_QUANTIZE` — set to `1` for int8 quantization
 - `KYUTAI_TTS_MAX_TOKENS` — max tokens per streaming chunk (default `50`)
 
+## Voice cloning
+
+Pocket-tts can clone a voice from a short audio sample. The cloning runs
+100 % locally — your audio never leaves the machine — but the
+cloning-enabled model checkpoint is gated on Hugging Face. One-time
+setup:
+
+1. Accept the terms at [huggingface.co/kyutai/pocket-tts](https://huggingface.co/kyutai/pocket-tts)
+2. `uv tool install huggingface-hub && hf auth login`
+3. `rm -rf ~/.cache/huggingface/hub/models--kyutai--pocket-tts` to force
+   re-downloading the cloning-enabled checkpoint
+
+Then either pass the audio file directly to `speak(voice="/path/to.wav")`,
+or pre-extract it as a `.safetensors` for instant loading:
+
+```bash
+uvx kyutai-tts-mcp extract-voice \
+  --audio ~/voices/yours.wav \
+  --out ~/voices/yours.safetensors \
+  --language french_24l \
+  --truncate
+```
+
+Then `speak(voice="/path/to/yours.safetensors")`. Full guide and recording
+recommendations: [main repo](https://github.com/Vincweb/kyutai-tts-mcp#voice-cloning-custom-voices).
+
 ## Claude Code users
 
 If you're on Claude Code (CLI, desktop, or via Cursor), you can install

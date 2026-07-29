@@ -26,7 +26,7 @@ from typing import Any
 
 import numpy as np
 import sounddevice as sd
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from .extract import run_extract_voice
 
@@ -42,7 +42,7 @@ MAX_TOKENS = int(os.environ.get("KYUTAI_TTS_MAX_TOKENS", "50"))
 
 
 # ── Server instance ───────────────────────────────────────────────────────────
-mcp = FastMCP("kyutai-tts")
+mcp = MCPServer("kyutai-tts")
 
 
 # ── State: caches, queues, threads ────────────────────────────────────────────

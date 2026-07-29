@@ -228,7 +228,7 @@ the voice state — no audio.
 ## Architecture
 
 ```
-Claude Code  ──MCP stdio──▶  kyutai-tts-mcp (Python, FastMCP)
+Claude Code  ──MCP stdio──▶  kyutai-tts-mcp (Python, MCPServer)
                                   │
                                   │  speak(text)
                                   ▼
